@@ -1,0 +1,14 @@
+Simple testbench
+
+.control
+osdi simple_model.osdi
+op
+print all
+.endc
+
+N1 P 0 my_res R=2k
+V1 P 0 DC 5
+
+.op
+.print op v(p) i(v1)
+.end

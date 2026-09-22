@@ -1,0 +1,65 @@
+import os
+from typing import Dict, Any
+from .llm.gemini import VerilogAModelOutput
+from .validator import ValidationReport
+
+class Generator:
+    def __init__(self, output_dir: str):
+        self.output_dir = output_dir
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+    def save(self, basename: str, model_output: VerilogAModelOutput, phys_results: Dict[str, Any], validation: ValidationReport) -> str:
+        """
+        Validates and saves the Verilog-A code and markdown report.
+        Returns the path to the Verilog-A file.
+        """
+        # 1. Save Verilog-A
+        va_path = os.path.join(self.output_dir, f"{basename}.va")
+        
+        # We append a comment if validation fails, but still save it for inspection
+        va_content = model_output.verilog_a_code
+        if validation.overall == "FAIL":
+            va_content = "// WARNING: Validation failed. See analysis report.\n" + va_content
+            
+        with open(va_path, "w") as f:
+            f.write(va_content)
+            
+        # 2. Save Markdown Report
+        md_path = os.path.join(self.output_dir, f"{basename}_analysis.md")
+        with open(md_path, "w") as f:
+            f.write(f"# Circuit Analysis: {basename}\n\n")
+            f.write(f"## Summary\n{model_output.circuit_summary}\n\n")
+            f.write(f"## Topology\n{model_output.topology}\n\n")
+            f.write(f"## Equations\n{model_output.equations}\n\n")
+            f.write(f"## Assumptions\n{model_output.assumptions}\n\n")
+            f.write(f"## Expected Behavior\n{model_output.expected_behavior}\n\n")
+            f.write(f"## Validation Plan\n{model_output.validation_plan}\n\n")
+            
+            f.write("## Deterministic Reference\n")
+            if 'rc_cutoff_hz' in phys_results:
+                f.write("### RC\n")
+                f.write(f"fc = {phys_results['rc_cutoff_hz']:.2f} Hz\n")
+                f.write(f"tau = {phys_results['rc_tau']:.6g} s\n\n")
+            
+            if 'Vd' in phys_results:
+                f.write("### Diode\n")
+                f.write(f"Vd = {phys_results['Vd']:.4f} V\n")
+                f.write(f"Id = {phys_results['Id']:.6g} A\n\n")
+                
+            f.write("## Generated Model Checks\n")
+            f.write(f"Structural: {validation.structural}\n")
+            f.write(f"Topology: {validation.topology}\n")
+            f.write(f"Parameters: {validation.parameters}\n")
+            f.write(f"Physics: {validation.physics}\n")
+            f.write(f"Abstraction: {validation.abstraction}\n\n")
+            
+            if validation.messages:
+                f.write("### Validation Messages\n")
+                for msg in validation.messages:
+                    f.write(f"- {msg}\n")
+                f.write("\n")
+                
+            f.write("## Overall Result\n")
+            f.write(f"{validation.overall}\n")
+            
+        return va_path

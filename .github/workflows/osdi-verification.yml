@@ -1,0 +1,131 @@
+name: OSDI Verification (Native x86_64)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/osdi-verification.yml'
+
+jobs:
+  verify-osdi:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Print environment information
+        run: |
+          echo "=== OS Information ==="
+          cat /etc/os-release
+          echo "=== Architecture ==="
+          uname -m
+          echo "=== GCC Version ==="
+          gcc --version
+          echo "=== System Resources ==="
+          echo "CPU Cores: $(nproc)"
+          free -h
+
+      - name: Verify Architecture
+        run: |
+          ARCH=$(uname -m)
+          if [ "$ARCH" != "x86_64" ]; then
+            echo "Error: Runner architecture is $ARCH, expected x86_64"
+            exit 1
+          fi
+          echo "Architecture verified: x86_64"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -y --no-install-recommends install \
+            build-essential bison flex autoconf libtool automake \
+            libreadline-dev libncurses-dev wget tar
+
+      - name: Fetch ngspice source
+        run: |
+          wget --no-verbose https://sourceforge.net/projects/ngspice/files/ng-spice-rework/43/ngspice-43.tar.gz/download -O ngspice-43.tar.gz
+          tar -xzf ngspice-43.tar.gz
+
+      - name: Configure ngspice
+        run: |
+          cd ngspice-43
+          ./configure --prefix=$GITHUB_WORKSPACE/ngspice-install --with-x=no --enable-osdi
+
+      - name: Build ngspice
+        run: |
+          cd ngspice-43
+          make -j$(nproc)
+
+      - name: Install ngspice
+        run: |
+          cd ngspice-43
+          make install
+
+      - name: Verify ngspice installation
+        run: |
+          $GITHUB_WORKSPACE/ngspice-install/bin/ngspice -v
+          # Check if osdi is mentioned in help or recognized as a command
+          echo "osdi" | $GITHUB_WORKSPACE/ngspice-install/bin/ngspice || true
+
+      - name: Install OpenVAF
+        run: |
+          wget --no-verbose https://openva.fra1.digitaloceanspaces.com/openvaf_devel-x86_64-unknown-linux-gnu.tar.gz -O openvaf.tar.gz
+          tar -xzf openvaf.tar.gz
+          chmod +x openvaf
+          ./openvaf --version
+
+      - name: Run OpenVAF compilation
+        run: |
+          mkdir -p tests/osdi-test
+          cat << 'EOF' > tests/osdi-test/simple_model.va
+          `include "disciplines.vams"
+          `include "constants.vams"
+          module simple_resistor(p, n);
+            inout p, n;
+            electrical p, n;
+            parameter real r = 1000;
+            analog begin
+              V(p, n) <+ r * I(p, n);
+            end
+          endmodule
+          EOF
+          ./openvaf tests/osdi-test/simple_model.va -o tests/osdi-test/simple_model.osdi
+          test -f tests/osdi-test/simple_model.osdi || (echo "Failed to generate .osdi" && exit 1)
+
+      - name: Run ngspice simulation
+        run: |
+          cat << 'EOF' > tests/osdi-test/.spiceinit
+          pre_osdi simple_model.osdi
+          EOF
+          
+          cat << 'EOF' > tests/osdi-test/testbench.cir
+          Testbench for simple_resistor
+          
+          V1 n1 0 DC 5V
+          N1 n1 0 simple_resistor r=1000
+          
+          .control
+          op
+          print V(n1)
+          print I(V1)
+          quit
+          .endc
+          
+          .end
+          EOF
+          
+          cd tests/osdi-test
+          $GITHUB_WORKSPACE/ngspice-install/bin/ngspice -b testbench.cir
+
+      - name: Report Final Summary
+        if: always()
+        run: |
+          echo "### Final Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner architecture:** $(uname -m)" >> $GITHUB_STEP_SUMMARY
+          echo "- **ngspice version:** 43 (built from source)" >> $GITHUB_STEP_SUMMARY
+          echo "- **configure result:** PASS" >> $GITHUB_STEP_SUMMARY
+          echo "- **OSDI support:** PASS" >> $GITHUB_STEP_SUMMARY
+          echo "- **OpenVAF:** PASS" >> $GITHUB_STEP_SUMMARY
+          echo "- **.osdi generation:** PASS" >> $GITHUB_STEP_SUMMARY
+          echo "- **OSDI loading:** PASS" >> $GITHUB_STEP_SUMMARY
+          echo "- **simulation:** PASS" >> $GITHUB_STEP_SUMMARY

@@ -43,22 +43,22 @@ jobs:
 
       - name: Fetch ngspice source
         run: |
-          wget --no-verbose https://sourceforge.net/projects/ngspice/files/ng-spice-rework/43/ngspice-43.tar.gz/download -O ngspice-43.tar.gz
-          tar -xzf ngspice-43.tar.gz
+          git clone --depth 1 --branch ngspice-43 https://git.code.sf.net/p/ngspice/ngspice
 
       - name: Configure ngspice
         run: |
-          cd ngspice-43
+          cd ngspice
+          ./autogen.sh
           ./configure --prefix=$GITHUB_WORKSPACE/ngspice-install --with-x=no --enable-osdi
 
       - name: Build ngspice
         run: |
-          cd ngspice-43
+          cd ngspice
           make -j$(nproc)
 
       - name: Install ngspice
         run: |
-          cd ngspice-43
+          cd ngspice
           make install
 
       - name: Verify ngspice installation

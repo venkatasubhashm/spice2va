@@ -13,6 +13,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f "spice2va/requirements.txt" ]; then
+            pip install -r spice2va/requirements.txt
+          elif [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          else
+            echo "No dependency file found. Installing minimal dependencies explicitly."
+            pip install groq pydantic google-genai
+          fi
+
       - name: Print environment information
         run: |
           echo "=== OS Information ==="
@@ -74,46 +91,117 @@ jobs:
           chmod +x openvaf
           ./openvaf --version
 
+      - name: Run Spice2VA LLM Pipeline
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          LLM_PROVIDER: groq
+        run: |
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "Error: GROQ_API_KEY is missing."
+            exit 1
+          fi
+          echo "GROQ_API_KEY is securely configured."
+          
+          cd spice2va
+          python -m src.main examples/rc_lowpass.cir
+          
+          if [ ! -f "examples/output/rc_lowpass.va" ]; then
+            echo "Error: examples/output/rc_lowpass.va was not generated."
+            exit 1
+          fi
+          
+          echo "=== Generated Verilog-A Metadata ==="
+          echo "File exists: YES"
+          MODULE_NAME=$(grep -oP 'module\s+\K\w+' examples/output/rc_lowpass.va)
+          echo "Module Name: $MODULE_NAME"
+
       - name: Run OpenVAF compilation
         run: |
-          mkdir -p tests/osdi-test
-          cat << 'EOF' > tests/osdi-test/simple_model.va
-          `include "disciplines.vams"
-          `include "constants.vams"
-          module simple_resistor(p, n);
-            inout p, n;
-            electrical p, n;
-            parameter real r = 1000;
-            analog begin
-              V(p, n) <+ r * I(p, n);
-            end
-          endmodule
-          EOF
-          ./openvaf tests/osdi-test/simple_model.va -o tests/osdi-test/simple_model.osdi
-          test -f tests/osdi-test/simple_model.osdi || (echo "Failed to generate .osdi" && exit 1)
+          cd spice2va
+          ../openvaf examples/output/rc_lowpass.va -o examples/output/rc_lowpass.osdi
+          if [ ! -f "examples/output/rc_lowpass.osdi" ]; then
+            echo "Error: Failed to generate .osdi"
+            exit 1
+          fi
 
       - name: Run ngspice simulation
         run: |
-          cat << 'EOF' > tests/osdi-test/testbench.cir
-          Testbench for simple_resistor
+          cd spice2va/examples/output
           
-          V1 n1 0 DC 1V
-          N1 n1 0 my_resistor
-          .model my_resistor simple_resistor (r=1000)
+          cat << 'EOF' > generate_testbench.py
+          import re, sys
+          
+          with open("rc_lowpass.va", "r") as f:
+              code = f.read()
+              
+          match = re.search(r"module\s+(\w+)\s*\((.*?)\);", code)
+          if not match:
+              print("Error: Could not find module declaration")
+              sys.exit(1)
+              
+          mod_name = match.group(1)
+          ports = [p.strip() for p in match.group(2).split(",")]
+          
+          print(f"Module Name: {mod_name}")
+          print(f"Ports: {ports}")
+          
+          if len(ports) != 2:
+              print(f"Error: Expected exactly 2 ports, but got {len(ports)}")
+              sys.exit(1)
+              
+          ports_lower = [p.lower() for p in ports]
+          if "in" not in ports_lower or "out" not in ports_lower:
+              print(f"Error: Expected ports 'in' and 'out', but got {ports}")
+              sys.exit(1)
+              
+          tb_nodes = []
+          for p in ports:
+              if p.lower() == 'in':
+                  tb_nodes.append('in_node')
+              elif p.lower() == 'out':
+                  tb_nodes.append('out_node')
+                  
+          node_str = " ".join(tb_nodes)
+          
+          tb = f"""Testbench for {mod_name}
+          
+          V1 in_node 0 DC 1V
+          N1 {node_str} my_filter
+          .model my_filter {mod_name} (R=1000 C=1e-6)
           
           .control
-          pre_osdi simple_model.osdi
+          pre_osdi rc_lowpass.osdi
           op
-          print V(n1)
+          print V(out_node)
           print I(V1)
           quit
           .endc
           
           .end
+          """
+          with open("testbench.cir", "w") as f:
+              f.write(tb)
           EOF
           
-          cd tests/osdi-test
-          $GITHUB_WORKSPACE/ngspice-install/bin/ngspice -b testbench.cir
+          python3 generate_testbench.py
+          
+          echo "=== Generated Testbench ==="
+          cat testbench.cir
+          echo "==========================="
+          
+          $GITHUB_WORKSPACE/ngspice-install/bin/ngspice -b testbench.cir > sim_results.txt 2>&1 || {
+            cat sim_results.txt
+            echo "Simulation failed (non-zero exit code)."
+            exit 1
+          }
+          
+          echo "=== Simulation Results ==="
+          cat sim_results.txt
+          
+          if grep -i "fatal error" sim_results.txt; then
+            echo "Simulation failed (fatal error detected)."
+            exit 1
+          fi
 
       - name: Report Final Summary
         run: |
@@ -122,7 +210,8 @@ jobs:
           echo "- **ngspice version:** 43 (built from source)" >> $GITHUB_STEP_SUMMARY
           echo "- **configure result:** PASS" >> $GITHUB_STEP_SUMMARY
           echo "- **OSDI support:** PASS" >> $GITHUB_STEP_SUMMARY
-          echo "- **OpenVAF:** PASS" >> $GITHUB_STEP_SUMMARY
-          echo "- **.osdi generation:** PASS" >> $GITHUB_STEP_SUMMARY
+          echo "- **Spice2VA generation:** PASS" >> $GITHUB_STEP_SUMMARY
+          echo "- **OpenVAF compilation:** PASS" >> $GITHUB_STEP_SUMMARY
           echo "- **OSDI loading:** PASS" >> $GITHUB_STEP_SUMMARY
-          echo "- **simulation:** PASS" >> $GITHUB_STEP_SUMMARY
+          echo "- **generated-model simulation:** PASS" >> $GITHUB_STEP_SUMMARY
+          echo "- **numerical equivalence:** NOT_IMPLEMENTED" >> $GITHUB_STEP_SUMMARY

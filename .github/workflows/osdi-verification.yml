@@ -51,45 +51,100 @@ jobs:
           fi
           echo "Architecture verified: x86_64"
 
-      - name: Install build dependencies
+      - name: Cache OSDI Infrastructure
+        id: osdi-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ngspice-install
+            openvaf
+          key: osdi-infra-v1-ubuntu-24.04-x86_64-ngspice-43-openvaf
+
+      - name: Install runtime dependencies
         run: |
           sudo apt-get update
           sudo apt-get -y --no-install-recommends install \
-            build-essential bison flex autoconf libtool automake \
-            libreadline-dev libncurses-dev wget tar
+            libreadline-dev libncurses-dev
 
-      - name: Fetch ngspice source
+      - name: Install build dependencies
+        if: steps.osdi-cache.outputs.cache-hit != 'true'
         run: |
+          sudo apt-get -y --no-install-recommends install \
+            build-essential bison flex autoconf libtool automake wget tar
+
+      - name: Build and install OSDI Infrastructure
+        if: steps.osdi-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "OSDI infrastructure cache MISS - building ngspice"
+          
+          # 1. Build ngspice
           git clone --depth 1 --branch ngspice-43 https://git.code.sf.net/p/ngspice/ngspice
-
-      - name: Configure ngspice
-        run: |
           cd ngspice
           ./autogen.sh
           ./configure --prefix=$GITHUB_WORKSPACE/ngspice-install --with-x=no --enable-osdi
-
-      - name: Build ngspice
-        run: |
-          cd ngspice
           make -j$(nproc)
-
-      - name: Install ngspice
-        run: |
-          cd ngspice
           make install
-
-      - name: Verify ngspice installation
-        run: |
-          $GITHUB_WORKSPACE/ngspice-install/bin/ngspice -v
-          # Check if osdi is mentioned in help or recognized as a command
-          echo "osdi" | $GITHUB_WORKSPACE/ngspice-install/bin/ngspice || true
-
-      - name: Install OpenVAF
-        run: |
+          cd ..
+          
+          # 2. Install OpenVAF
           wget --no-verbose https://openva.fra1.digitaloceanspaces.com/openvaf_devel-x86_64-unknown-linux-gnu.tar.gz -O openvaf.tar.gz
           tar -xzf openvaf.tar.gz
           chmod +x openvaf
+
+      - name: Verify OSDI Infrastructure
+        run: |
+          if [ "${{ steps.osdi-cache.outputs.cache-hit }}" == "true" ]; then
+            echo "OSDI infrastructure cache HIT - skipping ngspice build"
+          fi
+          
+          echo "Verifying OpenVAF..."
+          chmod +x openvaf
           ./openvaf --version
+          
+          echo "Verifying ngspice OSDI support..."
+          $GITHUB_WORKSPACE/ngspice-install/bin/ngspice -v
+          
+          echo "Running functional OSDI verification test..."
+          mkdir -p osdi_verify_tmp && cd osdi_verify_tmp
+          cat << 'VERILOG' > simple_resistor.va
+          `include "disciplines.vams"
+          `include "constants.vams"
+          module simple_resistor(p, n);
+            inout p, n;
+            electrical p, n;
+            parameter real r = 1000;
+            analog begin
+              V(p,n) <+ r * I(p,n);
+            end
+          endmodule
+          VERILOG
+          
+          ../openvaf simple_resistor.va -o simple_resistor.osdi
+          
+          cat << 'CIR' > test.cir
+          OSDI Verification Test
+          V1 n1 0 DC 1V
+          N1 n1 0 my_resistor
+          .model my_resistor simple_resistor (r=1000)
+          
+          .control
+          pre_osdi simple_resistor.osdi
+          op
+          print V(n1)
+          quit
+          .endc
+          .end
+          CIR
+          
+          $GITHUB_WORKSPACE/ngspice-install/bin/ngspice -b test.cir > sim.log 2>&1
+          if grep -i -E "fatal error|no such command available" sim.log; then
+            echo "OSDI verification failed:"
+            cat sim.log
+            exit 1
+          fi
+          echo "OSDI functional test passed:"
+          cat sim.log
+          cd ..
 
       - name: Run Spice2VA LLM Pipeline
         env:

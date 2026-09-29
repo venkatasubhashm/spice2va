@@ -16,8 +16,27 @@ class Generator:
         # 1. Save Verilog-A
         va_path = os.path.join(self.output_dir, f"{basename}.va")
         
-        # We append a comment if validation fails, but still save it for inspection
-        va_content = model_output.verilog_a_code
+        va_content = model_output.verilog_a_code.strip()
+        
+        # 1. Un-escape JSON string if the LLM double-encoded it (e.g. starts/ends with ")
+        if va_content.startswith('"') and va_content.endswith('"'):
+            import json
+            try:
+                decoded = json.loads(va_content)
+                if isinstance(decoded, str):
+                    va_content = decoded.strip()
+            except Exception:
+                pass
+                
+        # 2. Extract from Markdown code block if the LLM wrapped it
+        if va_content.startswith('```'):
+            lines = va_content.split('\n')
+            if lines[0].startswith('```'):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == '```':
+                lines = lines[:-1]
+            va_content = '\n'.join(lines).strip()
+            
         if validation.overall == "FAIL":
             va_content = "// WARNING: Validation failed. See analysis report.\n" + va_content
             

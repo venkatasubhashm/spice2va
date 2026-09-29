@@ -94,17 +94,15 @@ jobs:
 
       - name: Run ngspice simulation
         run: |
-          cat << 'EOF' > tests/osdi-test/.spiceinit
-          pre_osdi simple_model.osdi
-          EOF
-          
           cat << 'EOF' > tests/osdi-test/testbench.cir
           Testbench for simple_resistor
           
-          V1 n1 0 DC 5V
-          N1 n1 0 simple_resistor r=1000
+          V1 n1 0 DC 1V
+          N1 n1 0 my_resistor
+          .model my_resistor simple_resistor (r=1000)
           
           .control
+          pre_osdi simple_model.osdi
           op
           print V(n1)
           print I(V1)
@@ -118,7 +116,6 @@ jobs:
           $GITHUB_WORKSPACE/ngspice-install/bin/ngspice -b testbench.cir
 
       - name: Report Final Summary
-        if: always()
         run: |
           echo "### Final Summary" >> $GITHUB_STEP_SUMMARY
           echo "- **Runner architecture:** $(uname -m)" >> $GITHUB_STEP_SUMMARY

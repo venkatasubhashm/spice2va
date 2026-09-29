@@ -60,6 +60,18 @@ class Validator:
                     report.messages.append("Parameters: Diode Is parameter not found in code.")
                     param_pass = False
                     
+        import re
+        # Extract parameters explicitly defined in the code
+        params = re.findall(r'parameter\s+(?:real|integer)\s+(\w+)', code)
+        for p in params:
+            # Check for hallucinated electrical references like I(C) or V(R)
+            if re.search(fr'\b[VI]\s*\(\s*{p}\s*\)', code):
+                report.messages.append(f"Topology: Invalid reference to parameter '{p}' inside V() or I().")
+                top_pass = False
+
+        # Additional static check for undefined node accesses, just in case they used an undefined name
+        # We assume 'in', 'out', 'ground' are safe (if it's a 2-port + implicit ground)
+        
         report.topology = "PASS" if top_pass else "FAIL"
         report.parameters = "PASS" if param_pass else "FAIL"
 

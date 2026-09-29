@@ -107,6 +107,18 @@ def main():
 You are an expert analog circuit designer and Verilog-A modeler.
 Translate the following SPICE circuit Intermediate Representation (IR) into a physically meaningful Verilog-A behavioral model.
 
+CRITICAL VERILOG-A SEMANTIC RULES:
+1. NEVER use parameters as arguments to V() or I(). V() and I() may ONLY reference explicitly declared electrical nodes, ports, or valid branches.
+2. DO NOT invent non-existent electrical nodes or branches (e.g., do not write I(C) or V(R) if C and R are parameters). Every electrical quantity MUST correspond to an actual node or branch.
+3. PRESERVE TOPOLOGY: The model must preserve the topology represented by the IR. If the circuit has 3 nodes (e.g., in, out, 0), the Verilog-A must preserve the ground/reference behavior.
+   NOTE: Our current generator architecture strictly expects a 2-port module (in, out). You MUST use single-ended potentials (e.g., V(out), which implicitly references the global ground) to represent connections to node '0'. Do NOT silently collapse a 3-node circuit into an invalid 2-node model.
+4. DO NOT force a particular implementation such as laplace_nd() unless it is physically appropriate. The model should be physically meaningful and compatible with OpenVAF.
+
+Before writing the Verilog-A code, explicitly reason in your expected_behavior/equations about:
+- Circuit nodes and branches
+- Element constitutive equations
+- KCL / current contributions
+
 Circuit IR:
 {ir_text}
 

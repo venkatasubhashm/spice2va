@@ -18,24 +18,38 @@ class Generator:
         
         va_content = model_output.verilog_a_code.strip()
         
-        # 1. Un-escape JSON string if the LLM double-encoded it (e.g. starts/ends with ")
-        if va_content.startswith('"') and va_content.endswith('"'):
+        # 1. Iteratively un-escape JSON string if the LLM double/triple-encoded it
+        while va_content.startswith('"') and va_content.endswith('"'):
             import json
             try:
                 decoded = json.loads(va_content)
                 if isinstance(decoded, str):
                     va_content = decoded.strip()
+                else:
+                    break
             except Exception:
-                pass
+                break
                 
         # 2. Extract from Markdown code block if the LLM wrapped it
         if va_content.startswith('```'):
             lines = va_content.split('\n')
             if lines[0].startswith('```'):
                 lines = lines[1:]
-            if lines and lines[-1].strip() == '```':
+            if lines and lines[-1].strip().startswith('```'):
                 lines = lines[:-1]
             va_content = '\n'.join(lines).strip()
+            
+        # 3. Handle raw escaped string that lacks outer quotes
+        # (Groq sometimes outputs literal \n and \" without outer quotes)
+        # We only attempt this if there are NO actual newlines, minimizing false positives.
+        if '\\n' in va_content and '\n' not in va_content:
+            import json
+            try:
+                decoded = json.loads(f'"{va_content}"')
+                if isinstance(decoded, str):
+                    va_content = decoded.strip()
+            except Exception:
+                pass
             
         if validation.overall == "FAIL":
             va_content = "// WARNING: Validation failed. See analysis report.\n" + va_content

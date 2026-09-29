@@ -51,6 +51,39 @@ class TestGeneratorExtraction(unittest.TestCase):
             
         self._assert_valid_verilog_a(content)
 
+    def test_raw_escaped_string_without_quotes(self):
+        # The LLM outputs literal \n and \" characters, but FORGETS to wrap it in outer quotes
+        raw_code = '`include \\"constants.vams\\"\\n`include \\"disciplines.vams\\"\\nmodule rc_lowpass(in, out);\\n    electrical in, out;\\n    analog begin\\n    end\\nendmodule'
+        
+        model_output = VerilogAModelOutput(
+            circuit_summary="Test", topology="Test", equations="Test", assumptions="Test",
+            verilog_a_code=raw_code, validation_plan="Test", expected_behavior="Test"
+        )
+        
+        va_path = self.generator.save("test_raw", model_output, self.dummy_phys, self.val_report)
+        
+        with open(va_path, "r") as f:
+            content = f.read()
+            
+        self._assert_valid_verilog_a(content)
+
+    def test_normal_verilog_a_unchanged(self):
+        # A normal Verilog-A file with actual newlines and a valid `$strobe` with a literal \n
+        normal_code = '`include "constants.vams"\nmodule rc_lowpass(in, out);\n    analog begin\n        $strobe("Test\\n");\n    end\nendmodule'
+        
+        model_output = VerilogAModelOutput(
+            circuit_summary="Test", topology="Test", equations="Test", assumptions="Test",
+            verilog_a_code=normal_code, validation_plan="Test", expected_behavior="Test"
+        )
+        
+        va_path = self.generator.save("test_normal", model_output, self.dummy_phys, self.val_report)
+        
+        with open(va_path, "r") as f:
+            content = f.read()
+            
+        # It must NOT be corrupted by our JSON unwrapper. The literal \n must remain, and actual newlines must remain.
+        self.assertEqual(content, normal_code)
+        
     def _assert_valid_verilog_a(self, content: str):
         # 1. Contains module
         self.assertIn("module ", content)

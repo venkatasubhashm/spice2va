@@ -2,6 +2,22 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, List
 from .ir import Circuit
 from .llm.gemini import VerilogAModelOutput
+from .simulator import SimulationResult
+
+LF_GAIN_TOLERANCE_PCT = 0.1
+CUTOFF_TOLERANCE_PCT = 1.0
+
+@dataclass
+class NumericalComparisonResult:
+    is_success: bool = False
+    reference_lf_gain: float = 0.0
+    generated_lf_gain: float = 0.0
+    lf_gain_error_percent: float = 0.0
+    reference_cutoff_hz: float = 0.0
+    generated_cutoff_hz: float = 0.0
+    cutoff_error_percent: float = 0.0
+    messages: List[str] = field(default_factory=list)
+
 
 @dataclass
 class ValidationReport:
@@ -116,3 +132,43 @@ class Validator:
             report.overall = "PASS"
 
         return report
+
+    def compare_simulations(self, ref_sim: SimulationResult, gen_sim: SimulationResult) -> NumericalComparisonResult:
+        result = NumericalComparisonResult()
+        
+        if not ref_sim.is_success:
+            result.messages.append("Reference Simulation Failed")
+            return result
+            
+        if not gen_sim.is_success:
+            # We preserve the exact error message from simulator to pass it up
+            err = gen_sim.stderr.strip() if gen_sim.stderr else "Generated Model Simulation Failed"
+            result.messages.append(err)
+            return result
+            
+        if ref_sim.analysis_type != "AC" or gen_sim.analysis_type != "AC":
+            result.messages.append("Numerical Verification Failed: Both simulations must be AC analysis for comparison.")
+            return result
+            
+        result.reference_lf_gain = ref_sim.ac_metrics.get('lf_gain', 0.0)
+        result.generated_lf_gain = gen_sim.ac_metrics.get('lf_gain', 0.0)
+        
+        if result.reference_lf_gain != 0:
+            result.lf_gain_error_percent = abs(result.generated_lf_gain - result.reference_lf_gain) / abs(result.reference_lf_gain) * 100.0
+        else:
+            result.lf_gain_error_percent = float('inf')
+            
+        result.reference_cutoff_hz = ref_sim.ac_metrics.get('cutoff_hz', 0.0)
+        result.generated_cutoff_hz = gen_sim.ac_metrics.get('cutoff_hz', 0.0)
+        
+        if result.reference_cutoff_hz != 0:
+            result.cutoff_error_percent = abs(result.generated_cutoff_hz - result.reference_cutoff_hz) / abs(result.reference_cutoff_hz) * 100.0
+        else:
+            result.cutoff_error_percent = float('inf')
+            
+        if result.lf_gain_error_percent <= LF_GAIN_TOLERANCE_PCT and result.cutoff_error_percent <= CUTOFF_TOLERANCE_PCT:
+            result.is_success = True
+        else:
+            result.messages.append("Numerical Verification Failed: Tolerances exceeded.")
+            
+        return result

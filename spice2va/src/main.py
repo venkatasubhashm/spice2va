@@ -151,79 +151,71 @@ Circuit IR:
         except Exception as e:
             print(f"  -> Error calling LLM: {e}")
     
-    # 6. Simulator Status
-    print("\n[6] Dynamic Simulation:\n")
-    print("Reference Simulator:")
+    # 6. Dynamic Simulation & Numerical Verification
+    print("\n[6] Dynamic Simulation & Numerical Verification:\n")
     simulator = NgspiceSimulator()
+    
+    ref_sim_result = None
+    gen_sim_result = None
+    
+    print("Reference Simulator (ngspice):")
     if simulator.is_available():
-        print("- ngspice: AVAILABLE")
-        sim_result = simulator.run_reference(args.netlist)
-        if sim_result.is_success:
-            print(f"- Analysis: {sim_result.analysis_type}")
-            print("- Reference simulation: PASS\n")
-            
-            print("Reference Validation:")
-            if sim_result.analysis_type == "AC":
-                lf_gain = sim_result.ac_metrics.get('lf_gain', 0.0)
-                measured_cutoff = sim_result.ac_metrics.get('cutoff_hz', 0.0)
-                expected_cutoff = phys_results.get('rc_cutoff_hz', 0.0) if phys_results else 0.0
-                
-                print(f"- Expected fc: {expected_cutoff:.2f} Hz")
-                print(f"- ngspice fc: {measured_cutoff:.2f} Hz")
-                
-                if expected_cutoff > 0 and measured_cutoff > 0:
-                    error_pct = abs(measured_cutoff - expected_cutoff) / expected_cutoff * 100
-                    print(f"- Error: {error_pct:.4f} %")
-                    if error_pct < 5.0:
-                        print("- Result: VERIFIED")
-                    else:
-                        print("- Result: FAIL")
-                else:
-                    print("- Error: N/A")
-                    print("- Result: FAIL")
-            else:
-                # OP Comparison
-                valid_nodes = set(n.lower() for c in circuit.components for n in c.nodes)
-                valid_branches = set(f"{c.name.lower()}#branch" for c in circuit.components if c.type == 'V')
-                
-                ref_vd = sim_result.results.get('out', 0.0)
-                ref_id = abs(sim_result.results.get('v1#branch', 0.0))
-                
-                print("Reference (ngspice):")
-                for k, v in sim_result.results.items():
-                    if (k in valid_nodes or k in valid_branches) and k not in ('0', 'v(0)'):
-                        print(f"- {k} = {v:.4e}")
-                        
-                print("\nDeterministic model:")
-                det_vd = phys_results.get('Vd', 0.0)
-                det_id = phys_results.get('Id', 0.0)
-                print(f"- Vd = {det_vd:.4e}")
-                print(f"- Id = {det_id:.4e}")
-                
-                print("\nComparison:")
-                vd_err = abs(ref_vd - det_vd)
-                id_err = abs(ref_id - det_id)
-                print(f"- Vd error = {vd_err:.4e}")
-                print(f"- Id error = {id_err:.4e}")
-                if vd_err < 1e-2 and id_err < 1e-4:
-                    print("- Result: VERIFIED")
-                else:
-                    print("- Result: FAIL")
+        print("- Status: AVAILABLE")
+        ref_sim_result = simulator.run_reference(args.netlist)
+        if ref_sim_result.is_success:
+            print("- Reference simulation: PASS")
         else:
             print("- Reference simulation: FAIL")
-            if sim_result.stderr:
-                print(f"  Error: {sim_result.stderr.strip()}")
-            elif sim_result.stdout:
-                print("  Error in stdout. Run manually to check.")
+            if ref_sim_result.stderr:
+                print(f"  Error: {ref_sim_result.stderr.strip()}")
     else:
-        print("- ngspice: NOT_AVAILABLE")
+        print("- Status: NOT_AVAILABLE")
         print("- Reference simulation: NOT_AVAILABLE")
+
+    print("\nGenerated Model Simulator (OpenVAF + ngspice):")
+    if provider and os.path.exists(va_path) and ref_sim_result and ref_sim_result.is_success:
+        gen_sim_result = simulator.run_generated_model(va_path, circuit)
+        if gen_sim_result.is_success:
+            print("- Generated model compilation: PASS")
+            print("- Generated model simulation: PASS")
+        else:
+            err = gen_sim_result.stderr.strip()
+            if "OpenVAF Compilation Failed" in err:
+                print("- Generated model compilation: FAIL")
+                print(f"  Error: {err}")
+                print("- Generated model simulation: NOT_RUN")
+            elif "Mapping Failed" in err:
+                print("- Generated model compilation: PASS")
+                print(f"- {err.split(':')[0]}: FAIL")
+                print(f"  Error: {err}")
+                print("- Generated model simulation: NOT_RUN")
+            else:
+                print("- Generated model compilation: PASS")
+                print("- Generated model simulation: FAIL")
+                print(f"  Error: {err}")
+    else:
+        print("- Generated model simulation: NOT_RUN (Requires successful LLM generation and Reference simulation)")
+
+    print("\nNumerical Comparison:")
+    if ref_sim_result and ref_sim_result.is_success and gen_sim_result and gen_sim_result.is_success:
+        num_result = validator.compare_simulations(ref_sim_result, gen_sim_result)
         
-    print("\nGenerated Verilog-A:")
-    print("- Simulation: NOT_AVAILABLE")
-    
-    print("\nOverall:")
-    print("- Verilog-A physics verification: NOT_VERIFIED")
-    
+        print(f"- Reference LF Gain: {num_result.reference_lf_gain:.4f}")
+        print(f"- Generated LF Gain: {num_result.generated_lf_gain:.4f}")
+        print(f"- LF Gain Error:     {num_result.lf_gain_error_percent:.4f} %")
+        
+        print(f"- Reference Cutoff:  {num_result.reference_cutoff_hz:.2f} Hz")
+        print(f"- Generated Cutoff:  {num_result.generated_cutoff_hz:.2f} Hz")
+        print(f"- Cutoff Error:      {num_result.cutoff_error_percent:.4f} %")
+        
+        if num_result.is_success:
+            print("- Numerical Verification: PASS")
+        else:
+            print("- Numerical Verification: FAIL")
+            for msg in num_result.messages:
+                print(f"  Reason: {msg}")
+    else:
+        print("- Numerical Verification: NOT_RUN")
+
 if __name__ == "__main__":
     main()

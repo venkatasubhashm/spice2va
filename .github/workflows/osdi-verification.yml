@@ -159,8 +159,16 @@ jobs:
           fi
           echo "GROQ_API_KEY is securely configured."
           
+          set -euo pipefail
           cd spice2va
-          python -m src.main examples/rc_lowpass.cir
+          
+          echo "### Spice2VA Pipeline Output" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          
+          # Run python pipeline, piping stdout and stderr to tee so it shows in logs and summary
+          python -m src.main examples/rc_lowpass.cir 2>&1 | tee -a $GITHUB_STEP_SUMMARY
+          
+          echo '```' >> $GITHUB_STEP_SUMMARY
           
           if [ ! -f "examples/output/rc_lowpass.va" ]; then
             echo "Error: examples/output/rc_lowpass.va was not generated."
